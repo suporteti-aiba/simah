@@ -48,7 +48,7 @@ RUN npm run build
 FROM php:8.3.20-apache
 
 LABEL maintainer="pedro.nascimento@lepoti.tech"
-LABEL org.opencontainers.image.source="https://github.com/studio1-tech/mhb-web"
+LABEL org.opencontainers.image.source="https://github.com/studio1-tech/simah-web"
 LABEL org.opencontainers.image.description="SIMAH — Sistema de Monitoramento Hidrológico"
 
 ENV TZ="America/Bahia"

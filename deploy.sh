@@ -46,7 +46,7 @@ else
 fi
 
 REGISTRY=$(grep -E '^IMAGE_REGISTRY=' .env 2>/dev/null | cut -d= -f2- || true)
-REGISTRY="${REGISTRY:-ghcr.io/studio1-tech/mhb-web}"
+REGISTRY="${REGISTRY:-ghcr.io/studio1-tech/simah-web}"
 
 # --- Registra a tag atual para permitir rollback ---------------------------
 tag_atual=$(docker inspect --format '{{index .Config.Image}}' mhb 2>/dev/null | awk -F: '{print $NF}' || true)
