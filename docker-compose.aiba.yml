@@ -12,7 +12,7 @@
 
 services:
     app:
-        image: ${IMAGE_REGISTRY:-ghcr.io/studio1-tech/mhb-web}:${IMAGE_TAG:-latest}
+        image: ${IMAGE_REGISTRY:-ghcr.io/studio1-tech/simah-web}:${IMAGE_TAG:-latest}
         container_name: mhb
         restart: unless-stopped
         ports:
@@ -43,7 +43,7 @@ services:
                 max-file: '3'
 
     queue:
-        image: ${IMAGE_REGISTRY:-ghcr.io/studio1-tech/mhb-web}:${IMAGE_TAG:-latest}
+        image: ${IMAGE_REGISTRY:-ghcr.io/studio1-tech/simah-web}:${IMAGE_TAG:-latest}
         container_name: mhb_queue
         restart: unless-stopped
         # Roda como www-data para que os arquivos criados pelos jobs (tiles,
@@ -94,7 +94,7 @@ services:
         logging: *logging
 
     cron:
-        image: ${IMAGE_REGISTRY:-ghcr.io/studio1-tech/mhb-web}:${IMAGE_TAG:-latest}
+        image: ${IMAGE_REGISTRY:-ghcr.io/studio1-tech/simah-web}:${IMAGE_TAG:-latest}
         container_name: mhb_cron
         restart: unless-stopped
         command: bash -c "crontab /etc/cron.d/crontab && cron -f"
