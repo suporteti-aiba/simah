@@ -97,14 +97,27 @@ services:
         image: ${IMAGE_REGISTRY:-ghcr.io/studio1-tech/simah-web}:${IMAGE_TAG:-latest}
         container_name: mhb_cron
         restart: unless-stopped
-        command: bash -c "crontab /etc/cron.d/crontab && cron -f"
+        # O crontab vem montado fora do /etc/cron.d e é copiado para lá com dono
+        # root: o cron ignora arquivo de /etc/cron.d que não seja do root, e o
+        # bind mount traz o dono do checkout no host. Só o /etc/cron.d é usado
+        # (antes o arquivo também ia para o crontab do root com `crontab`, onde o
+        # campo de usuário virava o comando "root" e falhava em silêncio).
+        command: bash -c "install -o root -g root -m 0644 /etc/simah/crontab /etc/cron.d/simah && exec cron -f"
         volumes:
-            - ./docker/aiba/crontab:/etc/cron.d/crontab:ro
+            - ./docker/aiba/crontab:/etc/simah/crontab:ro
         depends_on:
             app:
                 condition: service_healthy
         networks:
             - simah
+        # A imagem traz o HEALTHCHECK do app (curl http://localhost/up), e aqui
+        # não há Apache: sem isto o contêiner fica unhealthy para sempre.
+        healthcheck:
+            test: ["CMD-SHELL", "pgrep -x cron > /dev/null || exit 1"]
+            interval: 60s
+            timeout: 5s
+            retries: 3
+            start_period: 10s
         deploy:
             resources:
                 limits:
