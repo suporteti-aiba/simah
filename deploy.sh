@@ -76,17 +76,23 @@ log "App saudável"
 # --- Migrações e cache -----------------------------------------------------
 # Rodam aqui, uma vez por deploy, e não no entrypoint: os três contêineres
 # compartilham a imagem e disputariam o banco ao subir juntos.
+#
+# Como www-data, o mesmo usuário da aplicação: como root, qualquer arquivo que
+# o artisan crie (o laravel.log, se uma migração gravar log) nasce root, e a
+# aplicação deixa de conseguir escrever nele.
+ARTISAN="docker exec -u www-data mhb php artisan"
+
 log "Aplicando migrações"
-docker exec mhb php artisan migrate --force
+$ARTISAN migrate --force
 
 log "Regenerando caches"
-docker exec mhb php artisan optimize:clear
-docker exec mhb php artisan storage:link 2>/dev/null || true
-docker exec mhb php artisan config:cache
-docker exec mhb php artisan route:cache
+$ARTISAN optimize:clear
+$ARTISAN storage:link 2>/dev/null || true
+$ARTISAN config:cache
+$ARTISAN route:cache
 
 log "Limpando restos de importações interrompidas"
-docker exec mhb php artisan temp:prune
+$ARTISAN temp:prune
 
 # --- Resultado -------------------------------------------------------------
 log "Estado final"

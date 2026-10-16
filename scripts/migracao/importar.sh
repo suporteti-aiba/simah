@@ -13,8 +13,17 @@
 set -euo pipefail
 
 PACOTE="${1:-}"
-PROJETO="mhb"
-COMPOSE="docker compose -f docker-compose.aiba.yml -p ${PROJETO}"
+# O padrão é o ambiente da AIBA. O QA do studio1 divide o host com os
+# containers antigos (mhb, mhb_queue, mhb_cron), que ficam parados para
+# rollback e ocupam esses nomes, então lá projeto, compose e containers vêm
+# por variável de ambiente.
+PROJETO="${PROJETO:-mhb}"
+ARQUIVO_COMPOSE="${ARQUIVO_COMPOSE:-docker-compose.aiba.yml}"
+CT_APP="${CT_APP:-mhb}"
+CT_DB="${CT_DB:-mhb_db}"
+CT_QUEUE="${CT_QUEUE:-mhb_queue}"
+CT_CRON="${CT_CRON:-mhb_cron}"
+COMPOSE="docker compose -f ${ARQUIVO_COMPOSE} -p ${PROJETO}"
 # www-data na imagem php:apache. Usamos o número, não o nome: o contêiner
 # auxiliar (alpine) não tem um usuário chamado www-data.
 UID_APP=33
@@ -27,7 +36,7 @@ erro() { printf '\n\033[1;31mERRO: %s\033[0m\n' "$*" >&2; exit 1; }
 [ -n "$PACOTE" ] || erro "uso: $0 <diretorio-do-pacote>"
 [ -d "$PACOTE" ] || erro "pacote não encontrado: $PACOTE"
 PACOTE=$(cd "$PACOTE" && pwd)
-[ -f "docker-compose.aiba.yml" ] || erro "rode a partir da raiz do projeto."
+[ -f "$ARQUIVO_COMPOSE" ] || erro "rode a partir da raiz do projeto."
 [ -f "${PACOTE}/MANIFESTO.txt" ] || erro "MANIFESTO.txt ausente — o pacote está incompleto."
 
 # --- Integridade -----------------------------------------------------------
@@ -39,7 +48,7 @@ source "${PACOTE}/MANIFESTO.txt"
 log "Manifesto: ${BANCO_TABELAS} tabelas, ${TILES_ARQUIVOS} tiles, ${STORAGE_APP_ARQUIVOS} arquivos em storage/app"
 
 # --- Ambiente no ar? -------------------------------------------------------
-estado_db=$(docker inspect --format '{{.State.Health.Status}}' mhb_db 2>/dev/null || echo "ausente")
+estado_db=$(docker inspect --format '{{.State.Health.Status}}' "$CT_DB" 2>/dev/null || echo "ausente")
 [ "$estado_db" = "healthy" ] || erro "o banco não está saudável (estado: ${estado_db}). Rode ./deploy.sh primeiro."
 
 env_get() { grep -E "^${1}=" .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"; }
@@ -53,15 +62,15 @@ read -r -p "    Confirma a importação? (digite: sim) " confirma
 # --- Para os escritores ----------------------------------------------------
 # O worker e o cron gravam durante a importação e corromperiam o resultado.
 log "Parando fila e agendador durante a importação"
-docker stop mhb_queue mhb_cron > /dev/null 2>&1 || true
+docker stop "$CT_QUEUE" "$CT_CRON" > /dev/null 2>&1 || true
 
 # --- Banco -----------------------------------------------------------------
 log "Importando o banco (${BANCO_TABELAS} tabelas)"
 zcat "${PACOTE}/banco.sql.gz" \
-    | docker exec -i -e MYSQL_PWD="$DB_PASS" mhb_db \
+    | docker exec -i -e MYSQL_PWD="$DB_PASS" "$CT_DB" \
         mariadb --user="$DB_USER" --default-character-set=utf8mb4 "$DB_NAME"
 
-tabelas_agora=$(docker exec -e MYSQL_PWD="$DB_PASS" mhb_db \
+tabelas_agora=$(docker exec -e MYSQL_PWD="$DB_PASS" "$CT_DB" \
     mariadb --user="$DB_USER" --skip-column-names -e \
     "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${DB_NAME}'" | tr -d '[:space:]')
 log "Banco importado: ${tabelas_agora} tabelas"
@@ -113,14 +122,24 @@ $COMPOSE up -d > /dev/null 2>&1
 
 log "Aguardando o app"
 for i in $(seq 1 24); do
-    [ "$(docker inspect --format '{{.State.Health.Status}}' mhb 2>/dev/null || echo x)" = "healthy" ] && break
-    [ "$i" = "24" ] && erro "o app não ficou saudável. Veja: docker logs mhb"
+    [ "$(docker inspect --format '{{.State.Health.Status}}' "$CT_APP" 2>/dev/null || echo x)" = "healthy" ] && break
+    [ "$i" = "24" ] && erro "o app não ficou saudável. Veja: docker logs ${CT_APP}"
     sleep 5
 done
 
-docker exec mhb php artisan migrate --force
-docker exec mhb php artisan optimize:clear
-docker exec mhb php artisan storage:link 2>/dev/null || true
+# Como www-data, o usuário da aplicação: como root, um arquivo que o artisan
+# crie (o laravel.log, se uma migração gravar log) nasce root e a aplicação
+# deixa de conseguir escrever nele. HOME=/tmp porque o tinker (psysh) grava a
+# própria configuração no HOME, e o do www-data (/var/www) não é gravável.
+ARTISAN="docker exec -u www-data -e HOME=/tmp $CT_APP php artisan"
+
+$ARTISAN migrate --force
+$ARTISAN optimize:clear
+$ARTISAN storage:link 2>/dev/null || true
+# O optimize:clear apaga também os caches de configuração e de rotas; sem
+# refazê-los a aplicação funciona, mas relê tudo a cada requisição.
+$ARTISAN config:cache
+$ARTISAN route:cache
 
 # --- Validação -------------------------------------------------------------
 log "Validando contra o manifesto"
@@ -136,9 +155,9 @@ conferir() {
     fi
 }
 
-tiles_agora=$(docker exec mhb find /var/www/html/public/tiles -type f 2>/dev/null | wc -l)
-geojson_agora=$(docker exec mhb find /var/www/html/public/geojson -type f 2>/dev/null | wc -l)
-app_agora=$(docker exec mhb find /var/www/html/storage/app -type f -not -path '*/temp/*' 2>/dev/null | wc -l)
+tiles_agora=$(docker exec "$CT_APP" find /var/www/html/public/tiles -type f 2>/dev/null | wc -l)
+geojson_agora=$(docker exec "$CT_APP" find /var/www/html/public/geojson -type f 2>/dev/null | wc -l)
+app_agora=$(docker exec "$CT_APP" find /var/www/html/storage/app -type f -not -path '*/temp/*' 2>/dev/null | wc -l)
 
 conferir "tabelas do banco"  "$BANCO_TABELAS"        "$tabelas_agora"
 conferir "tiles"             "$TILES_ARQUIVOS"       "$tiles_agora"
@@ -147,7 +166,7 @@ conferir "arquivos storage"  "$STORAGE_APP_ARQUIVOS" "$app_agora"
 
 # A aplicação consegue mesmo ler os dados? Contagem de arquivo não prova isso.
 log "Verificando o acesso da aplicação"
-docker exec mhb php artisan tinker --execute='
+$ARTISAN tinker --execute='
     echo "estações no inventário: ".DB::table("hw_inventory_stations")->count().PHP_EOL;
     echo "leituras de telemetria: ".DB::table("hw_station_readings_telemetry")->count().PHP_EOL;
 ' 2>&1 | grep -E "estações|leituras" || aviso "não foi possível consultar as tabelas"
@@ -157,13 +176,13 @@ if [ "$falhou" = "1" ]; then
 fi
 
 log "Importação concluída e validada"
-cat <<'EOF'
+cat <<EOF
 
 Antes do cutover de DNS, verifique manualmente:
 
   - abrir o mapa e conferir se as camadas renderizam
-  - conferir se a coleta de satélite roda: docker logs mhb_cron
+  - conferir se a coleta de satélite roda: docker logs ${CT_CRON}
     (o teste da porta 16003 do item 4.1 precisa estar liberado)
-  - conferir a fila: docker exec mhb php artisan queue:failed
+  - conferir a fila: docker exec -u www-data ${CT_APP} php artisan queue:failed
 
 EOF
