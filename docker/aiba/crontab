@@ -8,17 +8,24 @@
 #     se o certificado vencer ou o proxy cair, os jobs continuam rodando;
 #   - o tráfego não sai da máquina.
 #
+# Formato de /etc/cron.d (com o campo de usuário): o contêiner copia este
+# arquivo para /etc/cron.d/simah ao subir (ver o serviço cron no compose).
+#
 # curl: --max-time 3600 acompanha o timeout do Apache; -sS silencia o progresso
-# mas mantém erros; -o /dev/null descarta o corpo da resposta.
-# A saída vai para o log do contêiner (docker logs mhb_cron).
+# mas mantém erros; -f faz uma resposta HTTP de erro (500, 409 de job já em
+# execução) contar como falha; -o /dev/null descarta o corpo da resposta.
+#
+# Sem MTA no contêiner, o cron descarta a saída dos jobs. Por isso cada linha
+# manda a sua para /proc/1/fd/1, a saída do processo principal do contêiner,
+# que é o que aparece em `docker logs mhb_cron`.
 
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-30 1 * * * root curl -sS --max-time 3600 -o /dev/null http://app/jobs/hidroweb/inventory-station || echo "[cron] falha em inventory-station"
-00 2 * * * root curl -sS --max-time 3600 -o /dev/null http://app/jobs/hidroweb/readings/hidro-serie-qa || echo "[cron] falha em hidro-serie-qa"
-30 2 * * * root curl -sS --max-time 3600 -o /dev/null http://app/jobs/hidroweb/info-ana-adopted-telemetric-series-reading || echo "[cron] falha em info-ana-adopted-telemetric-series-reading"
-10 * * * * root curl -sS --max-time 3600 -o /dev/null http://app/jobs/lrgs/readings/dcp-messages || echo "[cron] falha em dcp-messages"
+30 1 * * * root { curl -fsS --max-time 3600 -o /dev/null http://app/jobs/hidroweb/inventory-station || echo "[cron] $(date -Is) falha em inventory-station"; } >> /proc/1/fd/1 2>&1
+00 2 * * * root { curl -fsS --max-time 3600 -o /dev/null http://app/jobs/hidroweb/readings/hidro-serie-qa || echo "[cron] $(date -Is) falha em hidro-serie-qa"; } >> /proc/1/fd/1 2>&1
+30 2 * * * root { curl -fsS --max-time 3600 -o /dev/null http://app/jobs/hidroweb/info-ana-adopted-telemetric-series-reading || echo "[cron] $(date -Is) falha em info-ana-adopted-telemetric-series-reading"; } >> /proc/1/fd/1 2>&1
+10 * * * * root { curl -fsS --max-time 3600 -o /dev/null http://app/jobs/lrgs/readings/dcp-messages || echo "[cron] $(date -Is) falha em dcp-messages"; } >> /proc/1/fd/1 2>&1
 
 # Previsão de vazão — 1x por mês, dia 1 às 02:00
-0 2 1 * * root curl -sS --max-time 3600 -o /dev/null http://app/jobs/hidroweb/flow-forecast || echo "[cron] falha em flow-forecast"
+0 2 1 * * root { curl -fsS --max-time 3600 -o /dev/null http://app/jobs/hidroweb/flow-forecast || echo "[cron] $(date -Is) falha em flow-forecast"; } >> /proc/1/fd/1 2>&1

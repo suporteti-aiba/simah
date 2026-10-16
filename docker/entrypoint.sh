@@ -10,6 +10,12 @@ set -euo pipefail
 # pode manter dono root e a aplicação (que roda como www-data) falha ao escrever
 # — o mesmo sintoma que o modelo antigo, de bind mount, resolvia com chown a
 # cada boot.
+#
+# O ajuste procura arquivo a arquivo, e não só o dono da pasta: um
+# `docker exec ... php artisan` rodado como root cria arquivos de root dentro de
+# pastas que continuam sendo do www-data. Foi assim que o laravel.log nasceu
+# root no primeiro deploy do QA (uma migração grava log) e a coleta DCP falhou
+# em todas as estações por não conseguir escrever o log.
 
 DIRETORIOS_DE_ESCRITA=(
     storage
@@ -23,9 +29,8 @@ if [ "$(id -u)" = "0" ]; then
     for dir in "${DIRETORIOS_DE_ESCRITA[@]}"; do
         [ -d "/var/www/html/$dir" ] || continue
         # -h evita seguir o symlink public/storage criado por storage:link
-        if [ "$(stat -c '%U' "/var/www/html/$dir")" != "www-data" ]; then
-            chown -Rh www-data:www-data "/var/www/html/$dir"
-        fi
+        find "/var/www/html/$dir" \( ! -user www-data -o ! -group www-data \) \
+            -exec chown -h www-data:www-data {} +
     done
     chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache 2>/dev/null || true
 fi
