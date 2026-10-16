@@ -103,7 +103,9 @@ jobs:
   deploy-qa:
     name: Publica no QA (simah.studio1.tech)
     needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/alfa'
+    # Só no repositório da Studio1: o do cliente recebe este arquivo pelo merge
+    # alfa -> aiba-main e não tem (nem deve ter) acesso ao servidor do QA.
+    if: github.repository == 'studio1-tech/simah-web' && github.event_name == 'push' && github.ref == 'refs/heads/alfa'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -122,6 +124,13 @@ jobs:
       # O GITHUB_TOKEN deste job vai pelo stdin e serve só para o servidor baixar
       # a imagem do GHCR: vale enquanto o job roda, então nenhuma credencial do
       # registro fica guardada no servidor.
+      #
+      # Até 3 tentativas quando o ssh devolve 255 (não conectou ou a conexão
+      # caiu): no merge do PR #10 a primeira conexão deu timeout na porta 22 e a
+      # segunda passou. Qualquer outro código é do próprio deploy e encerra o
+      # job. Repetir é seguro: no servidor o deploy roda numa sessão própria com
+      # lock, então uma tentativa nova espera a anterior e republica o mesmo
+      # commit, o que não troca nada.
       - name: Deploy no servidor
         env:
           SSH_KEY: ${{ secrets.ALFA_SSH_KEY }}
@@ -132,5 +141,15 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/alfa
           chmod 600 ~/.ssh/alfa
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          printf '%s\n' "$REGISTRY_TOKEN" | ssh -i ~/.ssh/alfa -o IdentitiesOnly=yes -o BatchMode=yes \
-            -o ServerAliveInterval=30 root@ssh.studio1.tech "$GITHUB_SHA"
+          for tentativa in 1 2 3; do
+            status=0
+            printf '%s\n' "$REGISTRY_TOKEN" | ssh -i ~/.ssh/alfa -o IdentitiesOnly=yes -o BatchMode=yes \
+              -o ConnectTimeout=30 -o ServerAliveInterval=30 root@ssh.studio1.tech "$GITHUB_SHA" || status=$?
+            [ "$status" -ne 255 ] && exit "$status"
+            if [ "$tentativa" -lt 3 ]; then
+              echo "::warning::ssh devolveu 255 na tentativa $tentativa de 3; nova tentativa em $((tentativa * 30)) s"
+              sleep $((tentativa * 30))
+            fi
+          done
+          echo "::error::ssh não conectou ao servidor do QA em 3 tentativas"
+          exit 255
