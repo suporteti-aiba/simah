@@ -1,19 +1,23 @@
-# Publica a imagem do SIMAH no GHCR.
+# Publica a imagem do SIMAH no GHCR e, num push na alfa, sobe o QA.
 #
-# Este workflow NÃO conecta na VM da AIBA. O modelo antigo (deploy_production)
-# usa scp + ssh, ou seja, o runner da GitHub conecta de fora para dentro — o
-# que exige SSH exposto à internet, coisa que datacenter corporativo não
-# permite. Aqui o fluxo inverte: publicamos a imagem e a VM a busca, iniciando
-# a conexão de dentro para fora (ver item 6 do DRT-SIMAH-001).
+# main: publica as tags `latest` e `sha-<commit>`. Este workflow NÃO conecta na
+# VM da AIBA: o modelo antigo (deploy_production, scp + ssh) fazia o runner da
+# GitHub conectar de fora para dentro, o que exige SSH exposto à internet, coisa
+# que datacenter corporativo não permite. Aqui o fluxo inverte: publicamos a
+# imagem e a VM a busca, iniciando a conexão de dentro para fora (ver item 6 do
+# DRT-SIMAH-001). Na VM: ./deploy.sh sha-<commit>
 #
-# Na VM: ./deploy.sh sha-<commit>   (ou ./deploy.sh para a tag latest)
+# alfa: publica as tags `alfa` e `sha-<commit>` e o job "Publica no QA" sobe essa
+# mesma imagem em https://simah.studio1.tech, no servidor da Studio1. O QA roda,
+# portanto, exatamente a imagem que depois vai para a AIBA.
 
-name: Build and Publish Image (AIBA)
+name: Build and Publish Image
 
 on:
   push:
     branches:
       - main
+      - alfa
     paths-ignore:
       - 'docs/**'
       - '**.md'
@@ -22,6 +26,12 @@ on:
       tag:
         description: 'Tag adicional para a imagem (opcional)'
         required: false
+
+# Dois pushes seguidos na mesma branch não publicam em paralelo: o segundo
+# espera o primeiro terminar, para o QA nunca ficar com a imagem mais velha.
+concurrency:
+  group: imagem-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
@@ -48,13 +58,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # `latest` só na main: a branch padrão do repositório é a alfa, então o
+      # `is_default_branch` de antes marcaria como latest a imagem de QA.
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=alfa,enable=${{ github.ref == 'refs/heads/alfa' }}
             type=sha,prefix=sha-,format=short
             type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
 
@@ -67,7 +80,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # O cache do GitHub Actions evita reinstalar GDAL, JRE e Python a
-          # cada build — sem ele o build leva vários minutos.
+          # cada build; sem ele o build leva vários minutos.
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -86,3 +99,38 @@ jobs:
             echo "./deploy.sh sha-$(git rev-parse --short HEAD)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-qa:
+    name: Publica no QA (simah.studio1.tech)
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/alfa'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    environment:
+      name: alfa
+      url: https://simah.studio1.tech
+
+    steps:
+      # A chave e a host key do servidor ficam no environment `alfa`, que só a
+      # branch alfa enxerga. No servidor a chave está presa a um único comando
+      # (restrict,command= no authorized_keys): não abre shell nem túnel, e só
+      # aceita o SHA de um commit que esteja na alfa.
+      #
+      # O GITHUB_TOKEN deste job vai pelo stdin e serve só para o servidor baixar
+      # a imagem do GHCR: vale enquanto o job roda, então nenhuma credencial do
+      # registro fica guardada no servidor.
+      - name: Deploy no servidor
+        env:
+          SSH_KEY: ${{ secrets.ALFA_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.ALFA_SSH_KNOWN_HOSTS }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/alfa
+          chmod 600 ~/.ssh/alfa
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' "$REGISTRY_TOKEN" | ssh -i ~/.ssh/alfa -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o ServerAliveInterval=30 root@ssh.studio1.tech "$GITHUB_SHA"
