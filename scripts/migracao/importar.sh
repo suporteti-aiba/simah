@@ -127,9 +127,19 @@ for i in $(seq 1 24); do
     sleep 5
 done
 
-docker exec "$CT_APP" php artisan migrate --force
-docker exec "$CT_APP" php artisan optimize:clear
-docker exec "$CT_APP" php artisan storage:link 2>/dev/null || true
+# Como www-data, o usuário da aplicação: como root, um arquivo que o artisan
+# crie (o laravel.log, se uma migração gravar log) nasce root e a aplicação
+# deixa de conseguir escrever nele. HOME=/tmp porque o tinker (psysh) grava a
+# própria configuração no HOME, e o do www-data (/var/www) não é gravável.
+ARTISAN="docker exec -u www-data -e HOME=/tmp $CT_APP php artisan"
+
+$ARTISAN migrate --force
+$ARTISAN optimize:clear
+$ARTISAN storage:link 2>/dev/null || true
+# O optimize:clear apaga também os caches de configuração e de rotas; sem
+# refazê-los a aplicação funciona, mas relê tudo a cada requisição.
+$ARTISAN config:cache
+$ARTISAN route:cache
 
 # --- Validação -------------------------------------------------------------
 log "Validando contra o manifesto"
@@ -156,7 +166,7 @@ conferir "arquivos storage"  "$STORAGE_APP_ARQUIVOS" "$app_agora"
 
 # A aplicação consegue mesmo ler os dados? Contagem de arquivo não prova isso.
 log "Verificando o acesso da aplicação"
-docker exec "$CT_APP" php artisan tinker --execute='
+$ARTISAN tinker --execute='
     echo "estações no inventário: ".DB::table("hw_inventory_stations")->count().PHP_EOL;
     echo "leituras de telemetria: ".DB::table("hw_station_readings_telemetry")->count().PHP_EOL;
 ' 2>&1 | grep -E "estações|leituras" || aviso "não foi possível consultar as tabelas"
@@ -173,6 +183,6 @@ Antes do cutover de DNS, verifique manualmente:
   - abrir o mapa e conferir se as camadas renderizam
   - conferir se a coleta de satélite roda: docker logs ${CT_CRON}
     (o teste da porta 16003 do item 4.1 precisa estar liberado)
-  - conferir a fila: docker exec ${CT_APP} php artisan queue:failed
+  - conferir a fila: docker exec -u www-data ${CT_APP} php artisan queue:failed
 
 EOF
